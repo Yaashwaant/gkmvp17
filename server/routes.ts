@@ -1,0 +1,218 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import { storage } from "./storage";
+import { insertUserSchema, insertRewardSchema } from "@shared/schema";
+import { z } from "zod";
+import { generateImageHash, generateDeviceFingerprint, extractImageMetadata, validateLocationAccuracy } from "./utils/crypto";
+import { publicBlockchain } from "./blockchain/publicChain";
+import { registerAuthRoutes } from "./routes/auth";
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Register authentication routes
+  registerAuthRoutes(app);
+
+  // User registration (legacy route - for backward compatibility)
+  app.post("/api/register", async (req, res) => {
+    try {
+      const userData = insertUserSchema.parse(req.body);
+      
+      // Check if vehicle number already exists
+      const existingUser = await storage.getUserByVehicleNumber(userData.vehicleNumber);
+      if (existingUser) {
+        return res.status(400).json({ 
+          message: "Vehicle number already registered" 
+        });
+      }
+      
+      const user = await storage.createUser(userData);
+      res.json({ user });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ 
+          message: "Validation error", 
+          errors: error.errors 
+        });
+      }
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Simplified upload endpoint with Neon database photo storage
+  app.post("/api/upload-odometer", async (req, res) => {
+    try {
+      const { vehicleNumber, odometerImageUrl, km, imageData, imageMimeType, location, ocrConfidence } = req.body;
+      
+      // Verify vehicle exists
+      const user = await storage.getUserByVehicleNumber(vehicleNumber);
+      if (!user) {
+        return res.status(404).json({ 
+          message: "Vehicle not found" 
+        });
+      }
+
+      // Calculate rewards  
+      const calculatedCo2Saved = km * 0.0008; // 0.8g CO2 per km
+      const calculatedRewardGiven = calculatedCo2Saved * 2; // 2 rupees per gram CO2
+      const imageSize = imageData ? Math.round((imageData.length * 3) / 4) : null;
+
+      // Create reward with photo stored in Neon database
+      const reward = await storage.createReward({
+        vehicleNumber,
+        odometerImageUrl,
+        imageData: imageData || null, // Store base64 image in Neon database
+        imageMimeType: imageMimeType || null,
+        imageSize,
+        km,
+        co2Saved: calculatedCo2Saved,
+        rewardGiven: calculatedRewardGiven,
+        txHash: `tx_${Date.now()}`,
+        location: location || null,
+        ocrConfidence: parseFloat(ocrConfidence || '0.8'),
+        validationStatus: 'approved',
+        blockHash: null,
+        deviceFingerprint: null,
+        imageHash: null,
+        fraudScore: 0,
+      });
+      
+      res.json({ 
+        reward,
+        message: `Photo saved to Neon database. Earned ₹${calculatedRewardGiven} for saving ${calculatedCo2Saved}kg CO₂!`
+      });
+    } catch (error) {
+      console.error('Upload error:', error);
+      res.status(500).json({ message: "Failed to save photo and create reward" });
+    }
+  });
+
+  // Get user wallet data
+  app.get("/api/wallet/:vehicleNumber", async (req, res) => {
+    try {
+      const { vehicleNumber } = req.params;
+      
+      console.log('Getting wallet data for vehicle:', vehicleNumber);
+      const user = await storage.getUserByVehicleNumber(vehicleNumber);
+      console.log('User found:', user);
+      
+      if (!user) {
+        return res.status(404).json({ 
+          message: "Vehicle not found" 
+        });
+      }
+      
+      const totals = await storage.getTotalRewardsByVehicleNumber(vehicleNumber);
+      
+      res.json({
+        user,
+        ...totals,
+      });
+    } catch (error) {
+      console.error('Wallet API error:', error);
+      res.status(500).json({ message: "Internal server error", details: error.message });
+    }
+  });
+
+  // Get reward history
+  app.get("/api/reward-history/:vehicleNumber", async (req, res) => {
+    try {
+      const { vehicleNumber } = req.params;
+      
+      const rewards = await storage.getRewardsByVehicleNumber(vehicleNumber);
+      res.json({ rewards });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Get user by vehicle number
+  app.get("/api/user/:vehicleNumber", async (req, res) => {
+    try {
+      const { vehicleNumber } = req.params;
+      
+      const user = await storage.getUserByVehicleNumber(vehicleNumber);
+      if (!user) {
+        return res.status(404).json({ 
+          message: "Vehicle not found" 
+        });
+      }
+      
+      res.json({ user });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Admin endpoint to check public blockchain network status
+  app.get("/api/admin/blockchain-status", async (req, res) => {
+    try {
+      const networkStatus = publicBlockchain.getNetworkStatus();
+      res.json({ networkStatus });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Verify a transaction on public blockchain
+  app.get("/api/verify-transaction/:txHash", async (req, res) => {
+    try {
+      const { txHash } = req.params;
+      const verification = await publicBlockchain.verifyTransaction(txHash);
+      res.json(verification);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Admin endpoints for dashboard data
+  app.get('/api/admin/users', async (req, res) => {
+    try {
+      const users = await storage.getUsers();
+      res.json(users.sort((a, b) => new Date(b.registeredAt).getTime() - new Date(a.registeredAt).getTime()));
+    } catch (error) {
+      res.status(500).json({ 
+        message: 'Failed to fetch users',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  app.get('/api/admin/stats', async (req, res) => {
+    try {
+      const users = await storage.getUsers();
+      const rewards = await storage.getRewards();
+      
+      const stats = {
+        totalUsers: users.length,
+        totalRewards: rewards.reduce((sum, r) => sum + r.rewardGiven, 0),
+        totalCO2Saved: rewards.reduce((sum, r) => sum + r.co2Saved, 0),
+        totalDistanceCovered: rewards.reduce((sum, r) => sum + r.km, 0),
+        totalReadings: rewards.length
+      };
+      
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ 
+        message: 'Failed to fetch stats',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  app.get('/api/admin/recent-rewards', async (req, res) => {
+    try {
+      const rewards = await storage.getRewards();
+      const recentRewards = rewards
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 10);
+      res.json(recentRewards);
+    } catch (error) {
+      res.status(500).json({ 
+        message: 'Failed to fetch recent rewards',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  const httpServer = createServer(app);
+  return httpServer;
+}
