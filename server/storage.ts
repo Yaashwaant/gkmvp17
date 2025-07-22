@@ -359,6 +359,33 @@ export class MemStorage implements IStorage {
     // Memory storage - return null for now
     return null;
   }
+
+  // Blockchain storage methods as per PRD
+  private blockchainEntries = new Map<string, any>();
+
+  async createBlockchainEntry(entry: {
+    rc_hash: string;
+    odometer_reading: number;
+    carbon_credits: number;
+    app_id: string;
+    block_hash: string;
+    signature: string;
+    previous_block_hash: string | null;
+  }): Promise<void> {
+    const blockchainEntry = {
+      ...entry,
+      timestamp: new Date()
+    };
+    this.blockchainEntries.set(entry.block_hash, blockchainEntry);
+  }
+
+  async getLatestBlockchainClaim(rc_hash: string): Promise<any> {
+    const entries = Array.from(this.blockchainEntries.values())
+      .filter(entry => entry.rc_hash === rc_hash)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    
+    return entries[0] || null;
+  }
 }
 
 

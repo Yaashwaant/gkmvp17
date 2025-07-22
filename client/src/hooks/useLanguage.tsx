@@ -1,8 +1,9 @@
 import { useState, useEffect, createContext, useContext, ReactNode } from 'react';
 import en from '../locales/en.json';
 import hi from '../locales/hi.json';
+import mr from '../locales/mr.json';
 
-type Language = 'en' | 'hi';
+type Language = 'en' | 'hi' | 'mr';
 type Translations = typeof en;
 
 interface LanguageContextType {
@@ -16,6 +17,7 @@ const LanguageContext = createContext<LanguageContextType | undefined>(undefined
 const translations: Record<Language, Translations> = {
   en,
   hi,
+  mr,
 };
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
@@ -23,7 +25,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const savedLanguage = localStorage.getItem('greenkarma-language') as Language;
-    if (savedLanguage && (savedLanguage === 'en' || savedLanguage === 'hi')) {
+    if (savedLanguage && (savedLanguage === 'en' || savedLanguage === 'hi' || savedLanguage === 'mr')) {
       setLanguage(savedLanguage);
     }
   }, []);

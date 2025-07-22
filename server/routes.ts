@@ -37,6 +37,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Blockchain claim validation endpoint as per PRD
+  app.post("/api/claim", async (req, res) => {
+    try {
+      const { rc_number, odometer, image, app_id } = req.body;
+      
+      if (!rc_number || !odometer || !app_id) {
+        return res.status(400).json({ 
+          message: "Missing required fields: rc_number, odometer, app_id" 
+        });
+      }
+
+      // Hash RC number for privacy
+      const crypto = require('crypto');
+      const rc_hash = crypto.createHash('sha256').update(rc_number).digest('hex');
+      
+      // Check if this reading already exists in blockchain
+      const existingClaim = await storage.getLatestBlockchainClaim(rc_hash);
+      
+      if (existingClaim && existingClaim.odometerReading >= odometer) {
+        return res.status(400).json({
+          message: "Invalid claim: Odometer reading must be higher than previous reading",
+          lastReading: existingClaim.odometerReading
+        });
+      }
+
+      // Calculate carbon credits
+      const distance = existingClaim ? odometer - existingClaim.odometerReading : odometer;
+      const carbon_credits = distance * 0.105; // PRD specification
+      
+      // Create blockchain entry
+      const blockHash = crypto.createHash('sha256')
+        .update(`${rc_hash}${odometer}${Date.now()}${app_id}`)
+        .digest('hex');
+      
+      const signature = crypto.createHash('sha256')
+        .update(`${app_id}${process.env.PRIVATE_KEY || 'demo-key'}`)
+        .digest('hex');
+
+      // Store in blockchain table
+      await storage.createBlockchainEntry({
+        rc_hash,
+        odometer_reading: odometer,
+        carbon_credits,
+        app_id,
+        block_hash: blockHash,
+        signature,
+        previous_block_hash: existingClaim?.block_hash || null
+      });
+
+      res.json({
+        success: true,
+        block_hash: blockHash,
+        carbon_credits,
+        distance,
+        message: "Claim registered successfully on blockchain"
+      });
+
+    } catch (error) {
+      console.error('Blockchain claim error:', error);
+      res.status(500).json({ message: "Failed to process blockchain claim" });
+    }
+  });
+
+  // Get latest block for RC hash (cross-app validation)
+  app.get("/api/latestBlock/:rc_hash", async (req, res) => {
+    try {
+      const { rc_hash } = req.params;
+      const latestBlock = await storage.getLatestBlockchainClaim(rc_hash);
+      
+      if (!latestBlock) {
+        return res.status(404).json({ message: "No blocks found for this vehicle" });
+      }
+
+      res.json(latestBlock);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
   // Simplified upload endpoint with Neon database photo storage
   app.post("/api/upload-odometer", async (req, res) => {
     try {
@@ -50,9 +129,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Calculate rewards  
-      const calculatedCo2Saved = km * 0.0008; // 0.8g CO2 per km
-      const calculatedRewardGiven = calculatedCo2Saved * 2; // 2 rupees per gram CO2
+      // Calculate rewards using PRD specification
+      const calculatedCo2Saved = km * 0.105; // 0.105 kg CO2 per km as per PRD
+      const calculatedRewardGiven = calculatedCo2Saved * 2; // 2 rupees per kg CO2
       const imageSize = imageData ? Math.round((imageData.length * 3) / 4) : null;
 
       // Create reward with photo stored in Neon database

@@ -277,15 +277,20 @@ export default function Register() {
           </form>
         </Form>
 
-        {/* Skip Option */}
+        {/* Demo User Option */}
         <div className="mt-6 text-center">
           <p className="text-gray-600 mb-3">Want to explore first?</p>
           <Button 
             variant="outline" 
-            onClick={() => window.location.href = '/wallet'}
+            onClick={() => {
+              // Set demo user in localStorage
+              localStorage.setItem('currentVehicleNumber', 'DEMO4774');
+              localStorage.setItem('isDemo', 'true');
+              window.location.href = '/wallet';
+            }}
             className="border-gray-300 hover:bg-gray-50"
           >
-            Skip & View Demo Wallet
+            {t('register.viewDemo')}
           </Button>
         </div>
       </div>
