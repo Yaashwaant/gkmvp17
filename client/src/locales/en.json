@@ -43,7 +43,8 @@
     "vehicleNumber": "Vehicle Number",
     "rcPhoto": "RC Photo",
     "register": "Register",
-    "skip": "Skip"
+    "skip": "Skip",
+    "viewDemo": "View Demo User"
   },
   "history": {
     "title": "Reward History",
